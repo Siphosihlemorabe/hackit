@@ -1,48 +1,29 @@
-# Byte-compiled / optimized
+# Byte-compiled
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-.eggs/
-wheels/
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv/
 venv/
-env/
-ENV/
 
-# Testing / coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
+# Engine output -- regenerated on every run, noisy in diffs.
+# submissions/, best/, log/ and best-known.json are tracked on purpose:
+# a winning plan you cannot recompute is the one thing worth version control.
+traces/*
+!traces/.gitkeep
 
-# Type checkers / linters
-.mypy_cache/
-.ruff_cache/
-.pytype/
+# Transient
+*.lock
+*.tmp
 
-# Environment / secrets
-.env
-.env.*
-!.env.example
-
-# Editors
+# Editors / OS
 .vscode/
 .idea/
 *.swp
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Jupyter
-.ipynb_checkpoints/
