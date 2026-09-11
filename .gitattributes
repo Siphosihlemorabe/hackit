@@ -1,0 +1,7 @@
+# LF everywhere. Submissions are compared byte-for-byte against the
+# portal and tools/submit.py builds a reproducible zip; a stray CRLF
+# would change both for no reason.
+* text=auto eol=lf
+*.png binary
+*.pdf binary
+*.zip binary

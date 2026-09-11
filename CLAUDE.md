@@ -139,6 +139,7 @@ belongs in `formula.json`. A number that is a preference belongs in a planner.
 | `tools/diff_trace.py` | First point where my trace and a portal log diverge. |
 | `tools/check_incremental.py` | Whether an incremental score still agrees with full replay. Run after writing one, and after every new move type. |
 | `tools/portal_log.py` | Log parsing patterns. **Edit this first** once you have seen a real log; fit.py and diff_trace.py both depend on it. |
+| `tools/submit.py` | Emit every submission from `best/`, verify it is not stale, build a reproducible zip. No solving. |
 | `tools/record.py` | `best-known.json` read-modify-write, atomic, locked. |
 | `tools/selftest.py` | Solver + record store checks. Run if you touch either. |
 | `best-known.json` | Best score per level, with budget, seed, timestamp, components. |
@@ -168,7 +169,32 @@ python tools/gen_probes.py               # calibration submissions
 python tools/diff_trace.py TRACE LOG     # first divergence
 python tools/check_incremental.py --planner anneal   # audit the fast path
 python tools/run.py --compare climb,anneal --seeds 8 # is the change real?
+python tools/submit.py                   # emit every submission + package, ~0.3s
+python tools/submit.py --emit-only       # just rewrite the .txt files
 ```
+
+### Submitting
+
+`python tools/submit.py` rewrites every submission from `best/` and rebuilds
+`dist/hackit.zip`. It does no solving, so it takes ~0.3s, and ~0.05s when
+nothing changed.
+
+Two reasons that speed matters:
+
+- **The format is wrong at 12:00.** Fix `Plan.to_submission_text()` — the only
+  place that knows the format — and re-emit. One edit, no re-solve.
+- **It verifies three things that go stale silently.** The plan hash (is
+  `best/` in sync with `best-known.json`?), the components (does the engine
+  still produce the same facts?), and the score (does the *current* formula
+  still give the recorded total?). That last one fires the moment
+  `fit.py --write` lands a real formula: every score recorded under the
+  placeholder is fiction, and `stale` is how you find out before the
+  leaderboard tells you.
+
+The zip is byte-identical for identical content — fixed timestamps, sorted
+entries — so an unchanged rebuild is detected and skipped. `levels/` and
+`docs/` are excluded: the organisers' material is not yours to redistribute
+and it is most of the bytes. `--include-inputs` if you need them.
 
 ### Multi-seed search
 

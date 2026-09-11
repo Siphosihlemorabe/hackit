@@ -17,6 +17,10 @@ venv/
 traces/*
 !traces/.gitkeep
 
+# Packaged submissions -- rebuilt by tools/submit.py in a fraction of a
+# second, so never worth committing.
+dist/
+
 # Transient
 *.lock
 *.tmp

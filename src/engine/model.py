@@ -64,9 +64,17 @@ class Plan:
         """Render for upload.
 
         TODO(briefing): replace with the portal's exact submission format.
-        This is the ONLY place that knows it. Check for a required header,
-        an action count on line 1, and whether a trailing newline matters.
+        This is the ONLY place that knows it -- run.py, gen_probes.py and
+        submit.py all come through here, so a format fix at 12:00 costs
+        one edit and a re-emit, not a re-solve.
+
+        Check for: a required header, an action count on line 1, and
+        whether the empty plan should be an empty file or a bare newline.
+        We send an empty file; if the portal rejects it, that is the first
+        thing to flip.
         """
+        if not self.actions:
+            return ""
         return "\n".join(str(a) for a in self.actions) + "\n"
 
     def to_dict(self) -> dict[str, Any]:

@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         for p in PROBES:
             plan = p.build(level_id)
             path = PROBE_DIR / f"level{level_id}.{p.name}.txt"
-            path.write_text(plan.to_submission_text() if plan.actions else "", newline="\n")
+            path.write_text(plan.to_submission_text(), newline="\n")
             written.append(path)
 
     print(f"\nwrote {len(written)} probe submission(s) to {PROBE_DIR}")

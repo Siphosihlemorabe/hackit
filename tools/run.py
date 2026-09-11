@@ -37,7 +37,7 @@ import record
 
 from engine import load_level, simulate
 from engine.level import level_ids
-from engine.model import sha256_of
+from engine.model import Plan, sha256_of
 import planners
 import scoring
 
@@ -570,11 +570,13 @@ def main(argv: list[str] | None = None) -> int:
             r = by_level[level_id]
             if args.dry_run:
                 continue
-            plan_text = "\n".join(str(a) for a in r["plan"]["actions"])
-            plan_text = plan_text + "\n" if plan_text else ""
             _paths.SUBMISSIONS.mkdir(parents=True, exist_ok=True)
             _paths.BEST.mkdir(parents=True, exist_ok=True)
-            (_paths.SUBMISSIONS / f"level{level_id}.txt").write_text(plan_text, newline="\n")
+            # Through Plan, not a local join -- the format lives in exactly
+            # one place (engine/model.py) and tools/submit.py re-emits from
+            # the same code path.
+            _paths.submission_path(level_id).write_text(
+                Plan.from_dict(r["plan"]).to_submission_text(), newline="\n")
             record.write_json_atomic(_paths.BEST / f"level{level_id}.json", {
                 "plan": r["plan"], "components": r["components"], "score": r["score"],
                 "planner": r["planner"], "seed": r["seed"], "budget_s": r["budget_s"],
