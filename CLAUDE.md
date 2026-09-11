@@ -91,7 +91,10 @@ Do not override it by hand-editing `formula.json` to make a number match.
 Fixed seeds, no wall-clock dependence, no hash-order dependence. Concretely:
 
 - `ctx.rng` (seeded) — never the bare `random` module, never `random.seed()`
-  at import time.
+  at import time. Multi-seed search makes this sharper, not looser: the whole
+  fleet collapses to one result if planners ignore `ctx.seed`, and you will
+  read a spread of zero as "deterministic planner" when it is really "broken
+  planner".
 - Never `time.time()` inside a planner. `ctx.time_left()` for pacing only,
   never as an input to a decision.
 - Never Python's `hash()` — it is salted per process, so the same code gives
@@ -123,7 +126,7 @@ belongs in `formula.json`. A number that is a preference belongs in a planner.
 | `src/scoring.py` | components → score. Exact `Fraction` arithmetic. Raises `UnknownComponent` when the engine measures something the formula does not price — that is a bug, not a warning. |
 | `src/planners/__init__.py` | Planner registry, `Context` (level, seed, deadline). `@register("name")` and run.py finds it. |
 | `src/planners/*.py` | One file per approach. The only place decisions live. |
-| `tools/run.py` | **The main loop.** Parallel solve → score → compare → keep winners. |
+| `tools/run.py` | **The main loop.** Parallel multi-seed solve → score → compare → keep winners. |
 | `tools/fit.py` | Exact recovery of the formula from logs. |
 | `tools/exact_linalg.py` | Rational Gauss-Jordan behind fit.py. Reports unique / underdetermined / inconsistent, names conflicting logs, ranks the next probe. |
 | `tools/gen_probes.py` | Calibration submissions, one component each. Stub — fill in after the briefing. |
@@ -148,6 +151,8 @@ something lives.
 python tools/run.py                      # everything, 30s budget each
 python tools/run.py --time 3             # fast iteration
 python tools/run.py --level 2 --time 60  # one level, long budget
+python tools/run.py --seeds 16           # wider seed fleet on a stochastic planner
+python tools/run.py --seeds 1            # one seed, for debugging
 python tools/run.py --dry-run            # score without recording
 python tools/run.py --serial             # one process, for debugging a planner
 python tools/fit.py                      # recover the formula
@@ -155,6 +160,32 @@ python tools/fit.py --write              # save it, if UNIQUE and round
 python tools/gen_probes.py               # calibration submissions
 python tools/diff_trace.py TRACE LOG     # first divergence
 ```
+
+### Multi-seed search
+
+Every (level, planner) is solved `--seeds N` times from independent
+seeds, in parallel, and only the best replicate survives. N defaults to
+the core count.
+
+**Watch the SPREAD column, and act on it.** It is the gap between the
+best and worst seed:
+
+- **Wide spread** — the planner is luck-dependent. More seeds pay, and a
+  long budget on one seed is worse than the same time split across
+  several. Raise `--seeds`.
+- **Zero spread** — the planner is deterministic and every extra core did
+  identical work. `--seeds 1` and spend the cores on `--time` instead.
+  run.py says so explicitly at the end of the run.
+
+**Wall clock is no longer roughly `--time`.** With more tasks than cores
+the run takes ceil(tasks/cores) waves. The banner prints the estimate;
+if it says 240s, background it.
+
+The winning seed goes into `best-known.json` as `seed`, with
+`base_seed`, `seed_index` and `seeds_tried` beside it — enough to
+regenerate that exact plan. `spread` is in the history too, so you can
+see whether a level has stopped responding to seeds as well as whether
+it has stopped climbing.
 
 Stdlib only. No install step, no virtualenv, nothing to break at 10:05.
 
