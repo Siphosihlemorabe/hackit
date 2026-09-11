@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import contextlib
+import math
 import os
 import sys
 import time
@@ -48,7 +49,111 @@ GRACE_S = 10.0  # hard wall on top of the planner's own budget
 # --------------------------------------------------------------------------
 
 
-def derive_seed(base: int, level: str, planner: str, rep: int = 0) -> int:
+def sign_test_p(wins: int, losses: int) -> float:
+    """Exact two-sided sign test. Integer binomials, one division at the
+    end -- no normal approximation, which is meaningless at four seeds
+    anyway."""
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    k = max(wins, losses)
+    tail = sum(math.comb(n, i) for i in range(k, n + 1))
+    return min(1.0, 2 * tail / (2**n))
+
+
+def seeds_for_verdict(alpha: float = 0.05) -> int:
+    """Smallest number of one-sided paired seeds that could reach `alpha`.
+    Worth printing: at 4 seeds the best possible p is 0.125, so a run that
+    cannot produce a verdict should say so before it starts."""
+    n = 1
+    while 2 / (2**n) > alpha and n < 64:
+        n += 1
+    return n
+
+
+def paired_compare(
+    results: list[dict[str, Any]], baseline: str, candidates: list[str], objective: str
+) -> list[dict[str, Any]]:
+    """Per-seed differences between planners that ran on the same seeds.
+
+    Pairing is the point. Comparing two planners' *means* across
+    independent seeds buries a real effect under seed variance; comparing
+    them seed by seed cancels it, because both saw the same starting luck.
+    """
+    scores: dict[tuple[str, str, int], float] = {
+        (r["level"], r["planner"], r["rep"]): r["score"]
+        for r in results
+        if r["ok"] and r["valid"] and r["score"] is not None
+    }
+    levels = sorted({k[0] for k in scores}, key=lambda s: (len(s), s))
+
+    out = []
+    for cand in candidates:
+        for lv in levels:
+            reps = sorted({k[2] for k in scores if k[0] == lv})
+            deltas = []
+            for rep in reps:
+                a = scores.get((lv, baseline, rep))
+                b = scores.get((lv, cand, rep))
+                if a is None or b is None:
+                    continue
+                deltas.append((b - a) if objective == "max" else (a - b))
+            if not deltas:
+                continue
+            wins = sum(1 for d in deltas if d > 0)
+            losses = sum(1 for d in deltas if d < 0)
+            ties = len(deltas) - wins - losses
+            ordered = sorted(deltas)
+            mid = len(ordered) // 2
+            median = (ordered[mid] if len(ordered) % 2
+                      else (ordered[mid - 1] + ordered[mid]) / 2)
+            p = sign_test_p(wins, losses)
+            if wins == losses == 0:
+                verdict = "identical"
+            elif p <= 0.05:
+                verdict = "better" if wins > losses else "worse"
+            else:
+                verdict = "inconclusive"
+            out.append({
+                "level": lv, "candidate": cand, "baseline": baseline,
+                "n": len(deltas), "mean": sum(deltas) / len(deltas), "median": median,
+                "wins": wins, "losses": losses, "ties": ties, "p": p,
+                "verdict": verdict,
+            })
+    return out
+
+
+def print_compare(cmp_rows: list[dict[str, Any]], n_seeds: int) -> None:
+    if not cmp_rows:
+        print(c("no paired results to compare -- did both planners run on the same "
+                "levels?", YELLOW))
+        return
+    by_cand: dict[str, list[dict[str, Any]]] = {}
+    for row in cmp_rows:
+        by_cand.setdefault(row["candidate"], []).append(row)
+
+    need = seeds_for_verdict()
+    for cand, rows_ in by_cand.items():
+        base = rows_[0]["baseline"]
+        print(c(f"paired: {cand} vs {base} (baseline), {n_seeds} seed(s) per level",
+                BOLD))
+        head = f"  {'LEVEL':<6} {'Δ MEAN':>16} {'Δ MEDIAN':>16} {'W-L-T':>9} {'p':>8}  VERDICT"
+        print(c(head, DIM))
+        for r in rows_:
+            wlt = f"{r['wins']}-{r['losses']}-{r['ties']}"
+            codes = {"better": f"{BOLD};{GREEN}", "worse": RED,
+                     "identical": DIM, "inconclusive": YELLOW}[r["verdict"]]
+            print(f"  {r['level']:<6} {r['mean']:>+16,.0f} {r['median']:>+16,.0f} "
+                  f"{wlt:>9} {r['p']:>8.3f}  {c(r['verdict'], *codes.split(';'))}")
+        if any(r["verdict"] == "inconclusive" for r in rows_):
+            print(c(f"  inconclusive means the seeds disagree -- the difference is "
+                    f"inside the noise, not proven absent.", DIM))
+            print(c(f"  {need}+ seeds all pointing one way are needed for p<=0.05; "
+                    f"re-run with --seeds {max(need, n_seeds + 2)}.", DIM))
+        print()
+
+
+def derive_seed(base: int, level: str, planner: str | None, rep: int = 0) -> int:
     """Stable across runs, processes and platforms.
 
     Not hash() -- that is salted per process, which would make the same
@@ -58,8 +163,13 @@ def derive_seed(base: int, level: str, planner: str, rep: int = 0) -> int:
     crc32 with the rest rather than being added on, so replicate 1 is not
     a near neighbour of replicate 0 -- adjacent seeds can produce
     correlated search paths, which would waste half the fleet.
+
+    `planner=None` drops the planner from the derivation, so every planner
+    on a level gets the *same* seed per replicate. That is what makes
+    --compare a paired comparison instead of two independent samples.
     """
-    return (base * 1000003 + zlib.crc32(f"{level}:{planner}:{rep}".encode())) % (2**31)
+    key = f"{level}:{rep}" if planner is None else f"{level}:{planner}:{rep}"
+    return (base * 1000003 + zlib.crc32(key.encode())) % (2**31)
 
 
 def solve_one(task: dict[str, Any]) -> dict[str, Any]:
@@ -246,6 +356,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help=f"independent solves per planner per level, different seeds, "
                         f"best kept (default: core count = {os.cpu_count() or 4})")
     p.add_argument("--jobs", type=int, default=0, help="worker processes (default: cpu count)")
+    p.add_argument("--compare", metavar="A,B",
+                   help="paired A/B: run these planners on identical seeds and report "
+                        "whether the difference beats the seed noise")
     p.add_argument("--minimise", action="store_true", help="lower score is better")
     p.add_argument("--dry-run", action="store_true", help="score and print, write nothing")
     p.add_argument("--no-trace", action="store_true", help="skip writing traces/")
@@ -320,6 +433,19 @@ def main(argv: list[str] | None = None) -> int:
     want_planners = expand(args.planner)
     n_seeds = max(1, args.seeds or (os.cpu_count() or 4))
 
+    compare = expand([args.compare]) if args.compare else None
+    if compare:
+        if len(compare) < 2:
+            print("--compare needs at least two planners, e.g. --compare climb,anneal",
+                  file=sys.stderr)
+            return 2
+        unknown = [p for p in compare if p not in planners.REGISTRY]
+        if unknown:
+            print(f"unknown planner(s): {', '.join(unknown)}. "
+                  f"registered: {', '.join(sorted(planners.REGISTRY))}", file=sys.stderr)
+            return 2
+        want_planners = compare
+
     tasks = []
     for lv in levels:
         for name in planners.available(lv):
@@ -330,7 +456,9 @@ def main(argv: list[str] | None = None) -> int:
                     "level": lv,
                     "planner": name,
                     "rep": rep,
-                    "seed": derive_seed(args.seed, lv, name, rep),
+                    # In compare mode the planner is left out of the seed
+                    # derivation so both sides see identical seeds.
+                    "seed": derive_seed(args.seed, lv, None if compare else name, rep),
                     "budget_s": args.time,
                     # Only the winning replicate's trace is kept, but we
                     # cannot know which that is until they have all run.
@@ -347,6 +475,13 @@ def main(argv: list[str] | None = None) -> int:
     banner = (f"{len(tasks)} task(s)  levels={','.join(levels)}  budget={args.time:g}s  "
               f"seeds={n_seeds}  seed={args.seed}  objective={objective}")
     print(c(banner, DIM))
+    if compare:
+        need = seeds_for_verdict()
+        print(c(f"  paired compare: {' vs '.join(compare)} on identical seeds", DIM))
+        if n_seeds < need:
+            print(c(f"! {n_seeds} seeds cannot reach p<=0.05 even if every seed agrees "
+                    f"(best possible p={2 / 2**n_seeds:.3f}). Use --seeds {need} or more "
+                    f"for a verdict.", BOLD, YELLOW))
     if waves > 1 and not args.serial:
         # With N seeds the task count outruns the core count, so wall clock
         # is no longer roughly --time. Say so before they wander off.
@@ -456,6 +591,10 @@ def main(argv: list[str] | None = None) -> int:
                 "seed_index": r["rep"],
                 "seeds_tried": r["seeds_tried"],
                 "seed_spread": r["spread"],
+                # Which derivation produced `seed` -- compare mode leaves
+                # the planner out, so the two modes give different seeds
+                # for the same (level, rep) and the record must say which.
+                "seed_mode": "paired" if compare else "per-planner",
                 "planner": r["planner"],
                 "timestamp": stamp,
                 "plan_sha256": sha256_of(
@@ -497,6 +636,22 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print_table(rows, objective, show_seeds=n_seeds > 1)
     print()
+    if compare:
+        print_compare(paired_compare(results, compare[0], compare[1:], objective), n_seeds)
+        # A search cut off by the clock did a machine-dependent number of
+        # iterations, so re-running the comparison can flip it. Say so --
+        # otherwise a verdict looks firmer than it is.
+        timed_out = sorted({
+            r["planner"] for r in results
+            if r["ok"] and (r.get("plan") or {}).get("meta", {})
+            .get("search", {}).get("stopped_by") == "budget"
+        })
+        if timed_out:
+            print(c(f"! {', '.join(timed_out)} hit the time budget, not an iteration "
+                    f"cap -- iteration counts vary with machine load, so this verdict "
+                    f"is not exactly reproducible. Pass max_iters in the planner for a "
+                    f"comparison that is.", YELLOW))
+            print()
     msg = (f"{n_improved} improved  {BULLET}  {len(tasks)} solve(s) across {n_seeds} seed(s)"
            f"  {BULLET}  {time.monotonic() - started:.1f}s wall")
     if args.dry_run:

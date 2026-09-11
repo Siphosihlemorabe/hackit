@@ -3,6 +3,9 @@
 Import this first in every tool: `import _paths` before any engine import.
 Deliberately no package install -- `python tools/run.py` must work in a
 clean checkout with nothing but the stdlib.
+
+The paths themselves live in src/workspace.py so that library code and
+tools cannot disagree about where best/ is.
 """
 
 from __future__ import annotations
@@ -16,13 +19,32 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DOCS = ROOT / "docs"
-LEVELS = ROOT / "levels"
-SUBMISSIONS = ROOT / "submissions"
-BEST = ROOT / "best"
-LOG = ROOT / "log"
-TRACES = ROOT / "traces"
+from workspace import (  # noqa: E402
+    BEST,
+    BEST_KNOWN,
+    DOCS,
+    FORMULA,
+    HISTORY,
+    LEVELS,
+    LOG,
+    SUBMISSIONS,
+    TRACES,
+    best_plan_path,
+    submission_path,
+)
 
-BEST_KNOWN = ROOT / "best-known.json"
-HISTORY = ROOT / "best-known.history.jsonl"
-FORMULA = ROOT / "formula.json"
+__all__ = [
+    "BEST",
+    "BEST_KNOWN",
+    "DOCS",
+    "FORMULA",
+    "HISTORY",
+    "LEVELS",
+    "LOG",
+    "ROOT",
+    "SRC",
+    "SUBMISSIONS",
+    "TRACES",
+    "best_plan_path",
+    "submission_path",
+]

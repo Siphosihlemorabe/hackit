@@ -19,7 +19,16 @@ from dataclasses import dataclass, field
 
 from engine.model import Level, Plan
 
-__all__ = ["Context", "Planner", "available", "load_all", "register", "REGISTRY"]
+__all__ = [
+    "Context",
+    "Planner",
+    "PROBLEMS",
+    "REGISTRY",
+    "available",
+    "load_all",
+    "register",
+    "register_problem",
+]
 
 
 @dataclass
@@ -67,6 +76,22 @@ def register(name: str, *, levels: tuple[str, ...] | None = None) -> Callable[[P
         if name in REGISTRY:
             raise ValueError(f"planner {name!r} registered twice")
         REGISTRY[name] = Spec(name=name, fn=fn, levels=levels)
+        return fn
+
+    return deco
+
+
+# Search-problem factories, keyed by planner name. A planner that does
+# local search registers one so tools/check_incremental.py can build the
+# same state the planner searches over and audit it. Typed loosely to
+# avoid importing .search from here (it imports Context from us).
+PROBLEMS: dict[str, Callable[[Context], object]] = {}
+
+
+def register_problem(name: str) -> Callable[[Callable[[Context], object]],
+                                            Callable[[Context], object]]:
+    def deco(fn: Callable[[Context], object]) -> Callable[[Context], object]:
+        PROBLEMS[name] = fn
         return fn
 
     return deco

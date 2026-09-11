@@ -57,7 +57,10 @@ divergence. If your simulator and the portal disagree, your planner is climbing
 the wrong hill and the leaderboard will tell you so at 14:00.
 
 **4. Now optimise.** Everything before this was setup. This is the only phase
-where planner cleverness pays.
+where planner cleverness pays. Two functions in
+`src/planners/anneal.py` — `_initial` and `_mutate` — are the whole job; the
+search loop around them already works. Write `_mutate` first and spend your
+remaining time on it, not on the temperature schedule.
 
 **Before each new thing, check what is at zero or unverified.** `tools/run.py`
 prints this at the bottom of every run. A level with no score, a level scoring
@@ -125,12 +128,16 @@ belongs in `formula.json`. A number that is a preference belongs in a planner.
 | `src/engine/simulate.py` | The simulator. Replays an action list, emits cumulative components per step. **No weights.** Write `_real`, flip `ACTIVE`. |
 | `src/scoring.py` | components → score. Exact `Fraction` arithmetic. Raises `UnknownComponent` when the engine measures something the formula does not price — that is a bug, not a warning. |
 | `src/planners/__init__.py` | Planner registry, `Context` (level, seed, deadline). `@register("name")` and run.py finds it. |
+| `src/planners/search.py` | Local-search loop: acceptance, cooling, restarts, warm start from `best/`, budget handling, incremental-problem interface. Generic -- no problem knowledge. |
+| `src/planners/anneal.py` | `climb` + `anneal`. **`_initial` and `_mutate` are the two functions you write.** |
 | `src/planners/*.py` | One file per approach. The only place decisions live. |
+| `src/workspace.py` | Repo paths. `tools/_paths.py` re-exports these. |
 | `tools/run.py` | **The main loop.** Parallel multi-seed solve → score → compare → keep winners. |
 | `tools/fit.py` | Exact recovery of the formula from logs. |
 | `tools/exact_linalg.py` | Rational Gauss-Jordan behind fit.py. Reports unique / underdetermined / inconsistent, names conflicting logs, ranks the next probe. |
 | `tools/gen_probes.py` | Calibration submissions, one component each. Stub — fill in after the briefing. |
 | `tools/diff_trace.py` | First point where my trace and a portal log diverge. |
+| `tools/check_incremental.py` | Whether an incremental score still agrees with full replay. Run after writing one, and after every new move type. |
 | `tools/portal_log.py` | Log parsing patterns. **Edit this first** once you have seen a real log; fit.py and diff_trace.py both depend on it. |
 | `tools/record.py` | `best-known.json` read-modify-write, atomic, locked. |
 | `tools/selftest.py` | Solver + record store checks. Run if you touch either. |
@@ -159,6 +166,8 @@ python tools/fit.py                      # recover the formula
 python tools/fit.py --write              # save it, if UNIQUE and round
 python tools/gen_probes.py               # calibration submissions
 python tools/diff_trace.py TRACE LOG     # first divergence
+python tools/check_incremental.py --planner anneal   # audit the fast path
+python tools/run.py --compare climb,anneal --seeds 8 # is the change real?
 ```
 
 ### Multi-seed search
@@ -187,6 +196,57 @@ regenerate that exact plan. `spread` is in the history too, so you can
 see whether a level has stopped responding to seeds as well as whether
 it has stopped climbing.
 
+### Local search — where the score actually comes from
+
+`src/planners/anneal.py` warm-starts from `best/level{N}.json` and improves
+it. This compounds: every run picks up where the last one stopped, so
+re-running the same command keeps climbing. Two functions are yours:
+
+- **`_mutate(plan, rng)`** — a neighbouring plan. This is the highest-value
+  code in the repo. Moves that respect the problem's structure (swap two
+  stops, move one item between bins) beat random perturbation by more than
+  any metaheuristic tuning will.
+- **`_initial(ctx)`** — a constructive start. Search improves what you give
+  it; it does not rescue it.
+
+`climb` (strictly uphill) and `anneal` (accepts downhill moves early) share
+both functions, so you get the comparison for free. **Run `climb` first.** If
+it wins, the landscape is smooth and your time belongs in `_mutate`, not in
+the temperature schedule.
+
+**When evaluation rate becomes the bottleneck — and it will — go
+incremental.** `PlanMutationProblem` re-simulates every candidate, which is
+~10³ evals/sec; a `SearchProblem` that maintains its score across a move is
+~10⁵. That ratio is score. The interface is already in `search.py`.
+
+**Then immediately run `python tools/check_incremental.py --planner anneal`.**
+An incremental score that drifts from the full replay does not crash — the
+search just climbs a hill that is not there, and the leaderboard tells you at
+14:00. The checker applies random moves, compares against full replay after
+each, and verifies undo restores state exactly. It is `diff_trace.py` for the
+fast path. Re-run it every time you add a move type.
+
+### Is that change real? `--compare`
+
+```bash
+python tools/run.py --compare climb,anneal --seeds 8
+```
+
+Runs both planners on **identical** seeds and reports per-seed differences
+with an exact sign test. Paired is the point: comparing means across
+independent seeds buries a real effect under seed variance.
+
+- **4 seeds can never reach p≤0.05** — best possible is 0.125. run.py says so
+  before starting. **6 seeds** is the minimum for a verdict.
+- `inconclusive` means the seeds disagree, i.e. the difference is inside the
+  noise. It does not mean there is no difference.
+- A search stopped by the clock rather than an iteration cap did a
+  machine-dependent number of iterations, so the verdict is not exactly
+  reproducible. run.py flags this.
+
+Use it before you keep a planner change. A +200k move against a 30M spread is
+not evidence, and chasing one is a reliable way to lose two hours.
+
 Stdlib only. No install step, no virtualenv, nothing to break at 10:05.
 
 ## First twenty minutes
@@ -196,3 +256,4 @@ Stdlib only. No install step, no virtualenv, nothing to break at 10:05.
 3. Tell me the action types and the scoring rules. Then `Plan.to_submission_text()`,
    `parse_level()`, and `engine/simulate.py:_real`, in that order.
 4. Delete `src/planners/placeholder.py`.
+5. Then `_mutate` in `src/planners/anneal.py`, and leave `climb` running.
